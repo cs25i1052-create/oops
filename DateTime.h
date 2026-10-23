@@ -21,7 +21,7 @@ private:
 
 public:
     DateTime(int = 1, int = 1, int = 2026, int = 12, int = 0);
-    DateTime();
+
     ~DateTime();
 
     DateTime &setDateTime(int, int, int, int, int);

@@ -33,5 +33,5 @@ public:
     int getSize() const;
     static int getArrayCount();
 };
-
+#include "DynamicArray.cpp"
 #endif
