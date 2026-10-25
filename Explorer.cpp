@@ -2,7 +2,7 @@
 
 // Comparison Functions for Function Pointers
 bool compareByName(const Item* a, const Item* b) {
-    return a->getName() > b->getName(); // Alphabetical A-Z
+    return strcmp(a->getName(), b->getName()) > 0; // Alphabetical A-Z
 }
 
 bool compareBySize(const Item* a, const Item* b) {
@@ -10,11 +10,11 @@ bool compareBySize(const Item* a, const Item* b) {
 }
 
 bool compareByDate(const Item* a, const Item* b) {
-    return a->getDate().toNumericValue() > b->getDate().toNumericValue(); // Oldest to Newest
+    return a->getDate() > b->getDate(); // Oldest to Newest
 }
 
 Explorer::Explorer() {
-    root = new Item("/", true, "", nullptr);
+    root = new Item("/", 1, "");
     currentFolder = root;
 }
 
@@ -27,18 +27,18 @@ string Explorer::getCurrentPath() const {
     string path = "";
     const Item* temp = currentFolder;
     while (temp != nullptr && temp != root) {
-        path = "/" + temp->getName() + path;
+        path = string("/") + temp->getName() + path;
         temp = temp->getParent();
     }
     return path;
 }
 
 bool Explorer::createFolder(const string& folderName) {
-    if (currentFolder->findChild(folderName) != nullptr) {
+    if (currentFolder->findChild(folderName.c_str()) != nullptr) {
         cout << "  [Error] Item '" << folderName << "' already exists in this folder!\n";
         return false;
     }
-    Item* newFolder = new Item(folderName, true);
+    Item* newFolder = new Item(folderName.c_str(), 1);
     *currentFolder += newFolder; // Using overloaded += operator
     cout << "  [Success] Folder '" << folderName << "' created.\n";
     return true;
@@ -51,18 +51,18 @@ bool Explorer::createFile(const string& fileName) {
 
 // Overloaded createFile #2 (File with content)
 bool Explorer::createFile(const string& fileName, const string& initialContent) {
-    if (currentFolder->findChild(fileName) != nullptr) {
+    if (currentFolder->findChild(fileName.c_str()) != nullptr) {
         cout << "  [Error] Item '" << fileName << "' already exists in this folder!\n";
         return false;
     }
-    Item* newFile = new Item(fileName, false, initialContent);
+    Item* newFile = new Item(fileName.c_str(), 0, initialContent.c_str());
     *currentFolder += newFile;
     cout << "  [Success] File '" << fileName << "' (" << newFile->getTotalSize() << " B) created.\n";
     return true;
 }
 
 bool Explorer::openFolder(const string& folderName) {
-    Item* target = currentFolder->findChild(folderName);
+    Item* target = currentFolder->findChild(folderName.c_str());
     if (target == nullptr) {
         cout << "  [Error] Folder '" << folderName << "' not found.\n";
         return false;
@@ -98,7 +98,7 @@ void Explorer::listCurrentFolder() const {
 void Explorer::printTreeRecursive(const Item* node, string prefix, bool isLast) const {
     cout << prefix << (isLast ? "└── " : "├── ")
          << node->getName() << (node->getIsFolder() ? "/" : "")
-         << " (" << node->getTotalSize() << " B, v" << node->getVersion() << ")\n";
+         << " (" << node->getTotalSize() << " B, v" << node->version << ")\n";
 
     string nextPrefix = prefix + (isLast ? "    " : "│   ");
     for (int i = 0; i < node->getChildCount(); i++) {
@@ -119,7 +119,7 @@ void Explorer::showFullTree() const {
 void Explorer::searchRecursive(const Item* node, const string& target, string currentPath, int& foundCount) const {
     for (int i = 0; i < node->getChildCount(); i++) {
         Item* child = (*node)[i];
-        string childPath = (currentPath == "/") ? ("/" + child->getName()) : (currentPath + "/" + child->getName());
+        string childPath = (currentPath == "/") ? (string("/") + child->getName()) : (currentPath + "/" + child->getName());
         if (child->getName() == target) {
             cout << "  Found: " << childPath << " -> " << *child << "\n";
             foundCount++;
@@ -138,24 +138,24 @@ void Explorer::searchItem(const string& name) const {
 }
 
 bool Explorer::renameItem(const string& oldName, const string& newName) {
-    Item* target = currentFolder->findChild(oldName);
+    Item* target = currentFolder->findChild(oldName.c_str());
     if (!target) {
         cout << "  [Error] '" << oldName << "' not found.\n";
         return false;
     }
-    if (currentFolder->findChild(newName) != nullptr) {
+    if (currentFolder->findChild(newName.c_str()) != nullptr) {
         cout << "  [Error] '" << newName << "' already exists!\n";
         return false;
     }
-    target->setName(newName);
+    target->setName(newName.c_str());
     ++(*target); // Prefix increment version on rename
-    cout << "  [Success] Renamed to '" << newName << "' (v" << target->getVersion() << ").\n";
+    cout << "  [Success] Renamed to '" << newName << "' (v" << target->version << ").\n";
     return true;
 }
 
 bool Explorer::copyItem(const string& sourceName, const string& destFolderName) {
-    Item* src = currentFolder->findChild(sourceName);
-    Item* dest = (destFolderName == "..") ? currentFolder->getParent() : currentFolder->findChild(destFolderName);
+    Item* src = currentFolder->findChild(sourceName.c_str());
+    Item* dest = (destFolderName == "..") ? currentFolder->getParent() : currentFolder->findChild(destFolderName.c_str());
 
     if (!src) {
         cout << "  [Error] Source '" << sourceName << "' not found.\n";
@@ -179,16 +179,16 @@ bool Explorer::copyItem(const string& sourceName, const string& destFolderName) 
 }
 
 bool Explorer::moveItem(const string& sourceName, const string& destFolderName) {
-    Item* dest = (destFolderName == "..") ? currentFolder->getParent() : currentFolder->findChild(destFolderName);
+    Item* dest = (destFolderName == "..") ? currentFolder->getParent() : currentFolder->findChild(destFolderName.c_str());
     if (!dest || !dest->getIsFolder()) {
         cout << "  [Error] Destination folder '" << destFolderName << "' not found.\n";
         return false;
     }
-    if (dest->findChild(sourceName) != nullptr) {
+    if (dest->findChild(sourceName.c_str()) != nullptr) {
         cout << "  [Error] Item with same name already exists in destination!\n";
         return false;
     }
-    Item* movingItem = currentFolder->detachChild(sourceName);
+    Item* movingItem = currentFolder->removeChild(sourceName.c_str());
     if (!movingItem) {
         cout << "  [Error] Source item '" << sourceName << "' not found.\n";
         return false;
@@ -199,9 +199,9 @@ bool Explorer::moveItem(const string& sourceName, const string& destFolderName) 
 }
 
 bool Explorer::deleteItem(const string& name) {
-    int beforeNodes = Item::getActiveItemsCount();
-    if (currentFolder->deleteChild(name)) {
-        int afterNodes = Item::getActiveItemsCount();
+    int beforeNodes = Item::getTotalItems();
+    if (currentFolder->deleteChild(name.c_str())) {
+        int afterNodes = Item::getTotalItems();
         cout << "  [Success] Deleted '" << name << "'. Memory freed for "
              << (beforeNodes - afterNodes) << " node(s).\n";
         return true;
@@ -211,7 +211,7 @@ bool Explorer::deleteItem(const string& name) {
 }
 
 void Explorer::editFileContent(const string& fileName) {
-    Item* target = currentFolder->findChild(fileName);
+    Item* target = currentFolder->findChild(fileName.c_str());
     if (!target) {
         cout << "  [Error] File not found.\n";
         return;
@@ -222,11 +222,11 @@ void Explorer::editFileContent(const string& fileName) {
 
 // [Syllabus Mod 2 & 10] Bubble Sort using Function Pointers
 void Explorer::sortCurrentFolder(bool (*cmp)(const Item*, const Item*)) {
-    int n = currentFolder->children.size();
+    int n = currentFolder->children.getSize();
     for (int i = 0; i < n - 1; i++) {
         for (int j = 0; j < n - i - 1; j++) {
             if (cmp(currentFolder->children[j], currentFolder->children[j + 1])) {
-                swapElements(currentFolder->children[j], currentFolder->children[j + 1]);
+                currentFolder->children.swap(j, j + 1);
             }
         }
     }
@@ -251,9 +251,8 @@ void Explorer::runAutomatedDemo() {
 
     Item* report = currentFolder->findChild("midsem_report.tex");
     if (report) {
-        // Cascaded Member Function Calls + Conversion Constructor (20261014)
-        report->setContent("Complete OOPS Report with Screenshots and Annexures.")
-              .setDate(DateTime(20261014));
+        report->setContent("Complete OOPS Report with Screenshots and Annexures.");
+        report->createdDate.setDate(10, 14, 2026);
         (*report)++; // Postfix operator++
     }
 
@@ -272,9 +271,9 @@ void Explorer::runAutomatedDemo() {
     goBack(); // Back to /
 
     cout << "\n--- 4. Testing Deep Copy of Nested Folder ('College' -> 'Backup') ---\n";
-    cout << "  Active Memory Nodes BEFORE Deep Copy: " << Item::getActiveItemsCount() << "\n";
+    cout << "  Active Memory Nodes BEFORE Deep Copy: " << Item::getTotalItems() << "\n";
     copyItem("College", "Backup");
-    cout << "  Active Memory Nodes AFTER Deep Copy:  " << Item::getActiveItemsCount() << "\n";
+    cout << "  Active Memory Nodes AFTER Deep Copy:  " << Item::getTotalItems() << "\n";
 
     showFullTree();
 
@@ -290,7 +289,7 @@ void Explorer::startMenu() {
     while (true) {
         cout << "\n=========================================================\n";
         cout << " VIRTUAL FILE EXPLORER | Path: " << getCurrentPath()
-             << " | Active Nodes in RAM: " << Item::getActiveItemsCount() << "\n";
+             << " | Active Nodes in RAM: " << Item::getTotalItems() << "\n";
         cout << "=========================================================\n";
         cout << " 1. Create Folder (mkdir)      7. Copy Item (Deep Copy)\n";
         cout << " 2. Create File (touch)        8. Move Item (mv)\n";
@@ -396,4 +395,10 @@ void Explorer::startMenu() {
         // Automatic directory tree display after every user operation
         showFullTree();
     }
+}
+
+int main() {
+    Explorer app;
+    app.startMenu();
+    return 0;
 }
