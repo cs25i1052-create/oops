@@ -63,19 +63,136 @@ Explorer::Explorer()
     trashFolder = new Item(".Trash", 1, "");
     *root += trashFolder;
 
-    clipboardItem = nullptr;
+    clipboardCount = 0;
     isCutOperation = false;
-    selectedItem = nullptr;
+    selectedCount = 0;
+    for (int i = 0; i < MAX_SEL; i++)
+    {
+        clipboardItems[i] = nullptr;
+        selectedItems[i] = nullptr;
+    }
 
+    scrollOffset = 0;
     useColors = true;
     currentSortLabel = "None";
-    lastMessage = "Welcome! Type an item number or a command letter.";
+    lastMessage = "Welcome! Type 'select' (or M) to select folders/files, or # to open.";
     lastMessageType = MSG_INFO;
 }
 
 Explorer::~Explorer()
 {
     delete root;
+}
+
+void Explorer::clearSelection()
+{
+    selectedCount = 0;
+    for (int i = 0; i < MAX_SEL; i++)
+    {
+        selectedItems[i] = nullptr;
+    }
+}
+
+bool Explorer::isItemSelected(const Item *item) const
+{
+    if (item == nullptr)
+        return false;
+    for (int i = 0; i < selectedCount; i++)
+    {
+        if (selectedItems[i] == item)
+            return true;
+    }
+    return false;
+}
+
+void Explorer::addSelection(Item *item)
+{
+    if (item == nullptr || isItemSelected(item) || selectedCount >= MAX_SEL)
+        return;
+    selectedItems[selectedCount++] = item;
+}
+
+void Explorer::removeSelection(const Item *item)
+{
+    for (int i = 0; i < selectedCount; i++)
+    {
+        if (selectedItems[i] == item)
+        {
+            for (int j = i; j < selectedCount - 1; j++)
+            {
+                selectedItems[j] = selectedItems[j + 1];
+            }
+            selectedItems[selectedCount - 1] = nullptr;
+            selectedCount--;
+            i--;
+        }
+    }
+}
+
+Item *Explorer::getPrimarySelected() const
+{
+    if (selectedCount == 0)
+        return nullptr;
+    return selectedItems[0];
+}
+
+void Explorer::sanitizeClipboardAndSelection(const Item *deletedTarget)
+{
+    if (deletedTarget == nullptr)
+        return;
+
+    for (int i = 0; i < clipboardCount; i++)
+    {
+        if (isSelfOrDescendant(deletedTarget, clipboardItems[i]))
+        {
+            for (int j = i; j < clipboardCount - 1; j++)
+            {
+                clipboardItems[j] = clipboardItems[j + 1];
+            }
+            clipboardItems[clipboardCount - 1] = nullptr;
+            clipboardCount--;
+            i--;
+        }
+    }
+    if (clipboardCount == 0)
+    {
+        isCutOperation = false;
+    }
+
+    for (int i = 0; i < selectedCount; i++)
+    {
+        if (isSelfOrDescendant(deletedTarget, selectedItems[i]))
+        {
+            removeSelection(selectedItems[i]);
+            i--;
+        }
+    }
+}
+
+void Explorer::clampScroll()
+{
+    int vis = getVisibleCount();
+    int maxOffset = vis - VIEW_ROWS;
+    if (maxOffset < 0)
+        maxOffset = 0;
+    if (scrollOffset > maxOffset)
+        scrollOffset = maxOffset;
+    if (scrollOffset < 0)
+        scrollOffset = 0;
+}
+
+void Explorer::ensureVisible(int oneBasedIndex)
+{
+    int zeroIdx = oneBasedIndex - 1;
+    if (zeroIdx < scrollOffset)
+    {
+        scrollOffset = zeroIdx;
+    }
+    else if (zeroIdx >= scrollOffset + VIEW_ROWS)
+    {
+        scrollOffset = zeroIdx - VIEW_ROWS + 1;
+    }
+    clampScroll();
 }
 
 void Explorer::setMessage(const string &msg, int type)
@@ -269,13 +386,6 @@ string Explorer::getUniqueName(const Item *folder, const string &baseName) const
     return candidate;
 }
 
-bool Explorer::isClipboardAffected(const Item *target) const
-{
-    if (clipboardItem == nullptr || target == nullptr)
-        return false;
-    return isSelfOrDescendant(target, clipboardItem);
-}
-
 string Explorer::getCurrentPath() const
 {
     if (currentFolder == root)
@@ -310,7 +420,24 @@ string Explorer::getPreviewText(const Item *item) const
         return "";
     if (item->getIsFolder())
     {
-        return string("(Folder containing ") + intToString(item->children.getSize()) + " item(s))";
+        int cnt = item->children.getSize();
+        if (cnt == 0)
+            return "(Empty folder)";
+        string summary = "Contains " + intToString(cnt) + " item(s): ";
+        for (int i = 0; i < cnt; i++)
+        {
+            if (i > 0)
+                summary += ", ";
+            summary += item->children[i]->getName();
+            if (item->children[i]->getIsFolder())
+                summary += "/";
+            if (summary.length() > 55)
+            {
+                summary = summary.substr(0, 55) + "..";
+                break;
+            }
+        }
+        return summary;
     }
     if (strlen(item->content) == 0)
     {
@@ -397,6 +524,7 @@ bool Explorer::createFolder(const string &folderName)
         setMessage("Failed to create folder!", MSG_ERROR);
         return false;
     }
+    ensureVisible(getVisibleCount());
     setMessage(string("Folder '") + folderName + "' created.", MSG_SUCCESS);
     return true;
 }
@@ -431,6 +559,7 @@ bool Explorer::createFile(const string &fileName, const string &initialContent)
         setMessage("Failed to create file!", MSG_ERROR);
         return false;
     }
+    ensureVisible(getVisibleCount());
     setMessage(string("File '") + fileName + "' (" + intToString(newFile->getTotalSize()) + " B) created.", MSG_SUCCESS);
     return true;
 }
@@ -458,7 +587,8 @@ bool Explorer::openFolder(const string &path)
         return false;
     }
     currentFolder = target;
-    selectedItem = nullptr;
+    clearSelection();
+    scrollOffset = 0;
     if (currentFolder == root)
     {
         setMessage("Opened root directory '/'.", MSG_INFO);
@@ -478,7 +608,8 @@ bool Explorer::goBack()
         return false;
     }
     currentFolder = currentFolder->getParent();
-    selectedItem = nullptr;
+    clearSelection();
+    scrollOffset = 0;
     setMessage(string("Moved back to '") + getCurrentPath() + "'.", MSG_INFO);
     return true;
 }
@@ -757,10 +888,8 @@ bool Explorer::moveItem(const string &sourceName, const string &destFolderPath)
         setMessage(string("Move failed! Restored '") + sourceName + "' to original folder.", MSG_ERROR);
         return false;
     }
-    if (selectedItem == movingItem)
-    {
-        selectedItem = nullptr;
-    }
+    removeSelection(movingItem);
+    clampScroll();
     setMessage(string("Moved '") + sourceName + "' into '" + dest->getName() + "'.", MSG_SUCCESS);
     return true;
 }
@@ -773,20 +902,16 @@ bool Explorer::deleteItem(const string &name)
         return false;
     }
     Item *target = currentFolder->findChild(name.c_str());
-    if (target && isClipboardAffected(target))
+    if (target)
     {
-        clipboardItem = nullptr;
-        isCutOperation = false;
-    }
-    if (target && selectedItem == target)
-    {
-        selectedItem = nullptr;
+        sanitizeClipboardAndSelection(target);
     }
 
     int beforeNodes = Item::getTotalItems();
     if (currentFolder->deleteChild(name.c_str()))
     {
         int afterNodes = Item::getTotalItems();
+        clampScroll();
         setMessage(string("Deleted '") + name + "'. Memory freed for " + intToString(beforeNodes - afterNodes) + " node(s).", MSG_SUCCESS);
         return true;
     }
@@ -807,7 +932,8 @@ bool Explorer::copyToClipboard(const string &name)
         setMessage(string("Item '") + name + "' not found.", MSG_ERROR);
         return false;
     }
-    clipboardItem = target;
+    clipboardItems[0] = target;
+    clipboardCount = 1;
     isCutOperation = false;
     setMessage(string("Copied '") + name + "' to clipboard.", MSG_SUCCESS);
     return true;
@@ -826,7 +952,8 @@ bool Explorer::cutToClipboard(const string &name)
         setMessage(string("Item '") + name + "' not found.", MSG_ERROR);
         return false;
     }
-    clipboardItem = target;
+    clipboardItems[0] = target;
+    clipboardCount = 1;
     isCutOperation = true;
     setMessage(string("Cut '") + name + "' to clipboard.", MSG_SUCCESS);
     return true;
@@ -834,62 +961,98 @@ bool Explorer::cutToClipboard(const string &name)
 
 bool Explorer::pasteClipboard()
 {
-    if (clipboardItem == nullptr)
+    if (clipboardCount == 0)
     {
         setMessage("Clipboard is empty!", MSG_ERROR);
         return false;
     }
 
+    int successCount = 0;
+    string lastPastedName = "";
+
     if (!isCutOperation)
     {
-        if (isSelfOrDescendant(clipboardItem, currentFolder))
+        for (int i = 0; i < clipboardCount; i++)
         {
-            setMessage("Cannot copy a folder into itself or its own subfolder!", MSG_ERROR);
+            Item *clip = clipboardItems[i];
+            if (clip == nullptr)
+                continue;
+            if (isSelfOrDescendant(clip, currentFolder))
+            {
+                setMessage("Cannot copy a folder into itself or its own subfolder!", MSG_ERROR);
+                continue;
+            }
+            string newName = getUniqueName(currentFolder, clip->getName());
+            Item *deepClone = new Item(*clip);
+            deepClone->setName(newName.c_str());
+            if (!currentFolder->addChild(deepClone))
+            {
+                delete deepClone;
+                continue;
+            }
+            lastPastedName = newName;
+            successCount++;
+        }
+        if (successCount == 0)
+        {
+            if (lastMessageType != MSG_ERROR)
+                setMessage("Paste failed!", MSG_ERROR);
             return false;
         }
-        string newName = getUniqueName(currentFolder, clipboardItem->getName());
-        Item *deepClone = new Item(*clipboardItem);
-        deepClone->setName(newName.c_str());
-        if (!currentFolder->addChild(deepClone))
-        {
-            delete deepClone;
-            setMessage("Paste failed!", MSG_ERROR);
-            return false;
-        }
-        setMessage(string("Pasted '") + newName + "' into " + getCurrentPath() + ".", MSG_SUCCESS);
+        ensureVisible(getVisibleCount());
+        if (successCount == 1)
+            setMessage(string("Pasted '") + lastPastedName + "' into " + getCurrentPath() + ".", MSG_SUCCESS);
+        else
+            setMessage(string("Pasted ") + intToString(successCount) + " items into " + getCurrentPath() + ".", MSG_SUCCESS);
         return true;
     }
     else
     {
-        if (isSelfOrDescendant(clipboardItem, currentFolder))
+        for (int i = 0; i < clipboardCount; i++)
         {
-            setMessage("Cannot paste a folder into itself or its subfolder!", MSG_ERROR);
-            return false;
+            Item *clip = clipboardItems[i];
+            if (clip == nullptr)
+                continue;
+            if (isSelfOrDescendant(clip, currentFolder))
+            {
+                setMessage("Cannot paste a folder into itself or its subfolder!", MSG_ERROR);
+                continue;
+            }
+            Item *oldParent = clip->getParent();
+            if (oldParent == nullptr)
+                continue;
+
+            string origName = clip->getName();
+            string newName = (oldParent == currentFolder) ? origName : getUniqueName(currentFolder, origName);
+
+            oldParent->removeChild(origName.c_str());
+            clip->setName(newName.c_str());
+
+            if (!currentFolder->addChild(clip))
+            {
+                clip->setName(origName.c_str());
+                oldParent->addChild(clip);
+                continue;
+            }
+            lastPastedName = newName;
+            successCount++;
         }
-        Item *oldParent = clipboardItem->getParent();
-        if (oldParent == nullptr)
-        {
-            setMessage("Cannot move root item!", MSG_ERROR);
-            return false;
-        }
 
-        string origName = clipboardItem->getName();
-        string newName = (oldParent == currentFolder) ? origName : getUniqueName(currentFolder, origName);
-
-        oldParent->removeChild(origName.c_str());
-        clipboardItem->setName(newName.c_str());
-
-        if (!currentFolder->addChild(clipboardItem))
-        {
-            clipboardItem->setName(origName.c_str());
-            oldParent->addChild(clipboardItem);
-            setMessage("Paste failed! Restored item to original folder.", MSG_ERROR);
-            return false;
-        }
-
-        setMessage(string("Moved '") + newName + "' into " + getCurrentPath() + ".", MSG_SUCCESS);
-        clipboardItem = nullptr;
+        clipboardCount = 0;
         isCutOperation = false;
+        clampScroll();
+
+        if (successCount == 0)
+        {
+            if (lastMessageType != MSG_ERROR)
+                setMessage("Move paste failed!", MSG_ERROR);
+            return false;
+        }
+        ensureVisible(getVisibleCount());
+        if (successCount == 1)
+            setMessage(string("Moved '") + lastPastedName + "' into " + getCurrentPath() + ".", MSG_SUCCESS);
+        else
+            setMessage(string("Moved ") + intToString(successCount) + " items into " + getCurrentPath() + ".", MSG_SUCCESS);
         return true;
     }
 }
@@ -908,20 +1071,13 @@ bool Explorer::moveToTrash(const string &name)
         return false;
     }
 
-    if (isClipboardAffected(target))
-    {
-        clipboardItem = nullptr;
-        isCutOperation = false;
-    }
-    if (selectedItem == target)
-    {
-        selectedItem = nullptr;
-    }
+    sanitizeClipboardAndSelection(target);
 
     Item *removed = currentFolder->removeChild(name.c_str());
     string trashName = getUniqueName(trashFolder, removed->getName());
     removed->setName(trashName.c_str());
     trashFolder->addChild(removed);
+    clampScroll();
 
     setMessage(string("Moved '") + name + "' to Trash.", MSG_SUCCESS);
     return true;
@@ -953,6 +1109,7 @@ bool Explorer::restoreFromTrash(const string &name)
     string restoredName = getUniqueName(currentFolder, removed->getName());
     removed->setName(restoredName.c_str());
     currentFolder->addChild(removed);
+    ensureVisible(getVisibleCount());
 
     setMessage(string("Restored '") + restoredName + "' to " + getCurrentPath() + ".", MSG_SUCCESS);
     return true;
@@ -966,20 +1123,25 @@ void Explorer::emptyTrash()
         printLastMessage();
         return;
     }
+    int totalFreed = 0;
+    int itemsRemoved = 0;
     while (trashFolder->getChildCount() > 0)
     {
         Item *child = (*trashFolder)[0];
-        if (isClipboardAffected(child))
-        {
-            clipboardItem = nullptr;
-            isCutOperation = false;
-        }
+        sanitizeClipboardAndSelection(child);
         string childName = child->getName();
         int beforeNodes = Item::getTotalItems();
         trashFolder->deleteChild(childName.c_str());
         int afterNodes = Item::getTotalItems();
-        setMessage(string("Deleted '") + childName + "'. Memory freed for " + intToString(beforeNodes - afterNodes) + " node(s).", MSG_SUCCESS);
+        int freed = beforeNodes - afterNodes;
+        totalFreed += freed;
+        itemsRemoved++;
+        setMessage(string("Deleted '") + childName + "'. Memory freed for " + intToString(freed) + " node(s).", MSG_SUCCESS);
         printLastMessage();
+    }
+    if (itemsRemoved > 1)
+    {
+        setMessage(string("Emptied Trash (") + intToString(itemsRemoved) + " items). Memory freed for " + intToString(totalFreed) + " node(s).", MSG_SUCCESS);
     }
 }
 
@@ -1059,6 +1221,7 @@ void Explorer::showHelp() const
     cout << "  touch <name>               : Create a new file (prompts for content)\n";
     cout << "  cat <name>                 : View file content\n";
     cout << "  edit <name>                : Edit file content\n";
+    cout << "  select <1 2..|all|clear>   : Select one or multiple items (folders or files)\n";
     cout << "  copy <name>                : Copy item to clipboard\n";
     cout << "  cut <name>                 : Cut item to clipboard\n";
     cout << "  paste                      : Paste clipboard into current folder\n";
@@ -1117,8 +1280,8 @@ void Explorer::runAutomatedDemo()
     cout << "=========================================================\n";
 
     currentFolder = root;
-    selectedItem = nullptr;
-    clipboardItem = nullptr;
+    clearSelection();
+    clipboardCount = 0;
     isCutOperation = false;
 
     while (root->getChildCount() > 1)
@@ -1571,45 +1734,60 @@ void Explorer::renderDashboard() const
 {
     cout << "\033[2J\033[H";
 
-    printLine("  ╔", "═", "╗", 73);
+    printLine("  ╔", "═", "╗", 74);
     string leftTitle = "  VIRTUAL FILE EXPLORER";
-    string rightRam = string("Items in RAM: ") + intToString(Item::getTotalItems()) + "  ";
+    string rightRam = string("Trash: ") + intToString(trashFolder->getChildCount()) + " | Items in RAM: " + intToString(Item::getTotalItems()) + "  ";
     cout << "  ║" << color(CLR_HEADER);
     cout << leftTitle;
-    int midSpaces = 73 - (int)leftTitle.length() - (int)rightRam.length();
+    int midSpaces = 74 - (int)leftTitle.length() - (int)rightRam.length();
     for (int i = 0; i < midSpaces; i++)
         cout << " ";
     cout << rightRam << color(CLR_RESET) << "║\n";
-    printLine("  ╚", "═", "╝", 73);
+    printLine("  ╚", "═", "╝", 74);
 
     string locText = string("Location:  ") + getBreadcrumbPath();
     string sortText = string("Sorted by: ") + currentSortLabel;
     cout << "    ";
-    printPadded(locText, 73 - (int)sortText.length());
+    printPadded(locText, 74 - (int)sortText.length());
     cout << sortText << "\n\n";
 
-    cout << "  ┌────┬──────────────────────┬────────┬───────────┬──────────────────┬─────┐\n";
-    cout << "  │ #  │ Name                 │ Type   │ Size      │ Created          │ Ver │\n";
-    cout << "  ├────┼──────────────────────┼────────┼───────────┼──────────────────┼─────┤\n";
-
     int visibleCount = getVisibleCount();
+    int maxOffset = visibleCount - VIEW_ROWS;
+    if (maxOffset < 0)
+        maxOffset = 0;
+
+    string topArrow = (scrollOffset > 0) ? "▲" : " ";
+    string botArrow = (scrollOffset < maxOffset) ? "▼" : " ";
+
+    cout << "  ┌─────┬───────────────────┬────────┬──────────┬──────────────────┬─────┬───┐\n";
+    cout << "  │ #   │ Name              │ Type   │ Size     │ Created          │ Ver │ " << topArrow << " │\n";
+    cout << "  ├─────┼───────────────────┼────────┼──────────┼──────────────────┼─────┼───┤\n";
+
     if (visibleCount == 0)
     {
         cout << "  │ " << color(CLR_HINT);
-        printPadded("(Empty folder - press N for new folder or F for new file)", 71);
-        cout << color(CLR_RESET) << " │\n";
+        printPadded("(Empty folder - press N for new folder or F for new file)", 68);
+        cout << color(CLR_RESET) << " │ █ │\n";
     }
     else
     {
-        int idx = 1;
-        for (int i = 0; i < currentFolder->getChildCount(); i++)
+        int rowsToShow = (visibleCount - scrollOffset < VIEW_ROWS) ? (visibleCount - scrollOffset) : VIEW_ROWS;
+        int thumbRow = 0;
+        if (maxOffset > 0 && rowsToShow > 1)
         {
-            Item *child = (*currentFolder)[i];
-            if (strcmp(child->getName(), ".Trash") == 0)
+            thumbRow = (scrollOffset * (rowsToShow - 1)) / maxOffset;
+        }
+
+        for (int r = 0; r < rowsToShow; r++)
+        {
+            int itemNum = scrollOffset + r + 1;
+            Item *child = getVisibleItem(itemNum);
+            if (child == nullptr)
                 continue;
 
+            bool isSel = isItemSelected(child);
             string rowColor = "";
-            if (child == selectedItem)
+            if (isSel)
             {
                 rowColor = color(CLR_SELECT);
             }
@@ -1618,41 +1796,83 @@ void Explorer::renderDashboard() const
                 rowColor = color(CLR_FOLDER);
             }
 
-            string numStr = intToString(idx++);
+            string numStr = (isSel ? "*" : " ") + intToString(itemNum);
             string tag = child->getIsFolder() ? "[D] " : "[F] ";
             string nameStr = tag + child->getName();
             string typeStr = child->getIsFolder() ? "Folder" : "File";
             string sizeStr = intToString(child->getTotalSize()) + " B";
             string verStr = string("v") + intToString(child->version);
 
+            string barChar = "█";
+            if (maxOffset > 0)
+            {
+                barChar = (r == thumbRow) ? "█" : "░";
+            }
+
             cout << "  │" << rowColor << " ";
-            printPadded(numStr, 2);
+            printPadded(numStr, 3);
             cout << " │ ";
-            printPadded(nameStr, 20);
+            printPadded(nameStr, 17);
             cout << " │ ";
             printPadded(typeStr, 6);
             cout << " │ ";
-            printPadded(sizeStr, 9);
+            printPadded(sizeStr, 8);
             cout << " │ ";
             cout << child->createdDate;
             cout << " │ ";
             printPadded(verStr, 3);
-            cout << " " << color(CLR_RESET) << "│\n";
+            cout << " " << color(CLR_RESET) << "│ " << barChar << " │\n";
         }
     }
-    cout << "  └────┴──────────────────────┴────────┴───────────┴──────────────────┴─────┘\n\n";
+    cout << "  └─────┴───────────────────┴────────┴──────────┴──────────────────┴─────┴───┘\n";
 
-    if (selectedItem != nullptr)
+    if (visibleCount > VIEW_ROWS)
     {
-        cout << "    Selected: " << selectedItem->getName()
-             << "  (" << (selectedItem->getIsFolder() ? "Folder" : "File")
-             << ", " << selectedItem->getTotalSize() << " B, v" << selectedItem->version << ")\n";
-        cout << "    Preview : " << getPreviewText(selectedItem) << "\n\n";
+        int startRow = scrollOffset + 1;
+        int endRow = scrollOffset + VIEW_ROWS;
+        if (endRow > visibleCount)
+            endRow = visibleCount;
+        string scrollInfo = string("Showing ") + intToString(startRow) + "-" + intToString(endRow) + " of " + intToString(visibleCount) + " items   |   Scroll: [U] Up   [J] Down";
+        cout << "    " << color(CLR_HINT);
+        printPadded(scrollInfo, 70);
+        cout << color(CLR_RESET) << " " << botArrow << "\n\n";
+    }
+    else
+    {
+        cout << "\n";
+    }
+
+    if (selectedCount == 1)
+    {
+        Item *sel = selectedItems[0];
+        cout << "    Selected: " << sel->getName()
+             << "  (" << (sel->getIsFolder() ? "Folder" : "File")
+             << ", " << sel->getTotalSize() << " B, v" << sel->version << ")\n";
+        cout << "    Preview : " << getPreviewText(sel) << "\n\n";
+    }
+    else if (selectedCount > 1)
+    {
+        string names = "";
+        int totalBytes = 0;
+        for (int i = 0; i < selectedCount; i++)
+        {
+            if (i > 0)
+                names += ", ";
+            names += selectedItems[i]->getName();
+            if (selectedItems[i]->getIsFolder())
+                names += "/";
+            totalBytes += selectedItems[i]->getTotalSize();
+        }
+        if (names.length() > 48)
+            names = names.substr(0, 48) + "..";
+        cout << "    Selected: " << selectedCount << " items (" << names << ")\n";
+        cout << "    Preview : Combined Size: " << totalBytes
+             << " B  |  Ready for [C] Copy, [X] Move, [D] Delete/Trash\n\n";
     }
     else
     {
         cout << "    Selected: " << color(CLR_HINT)
-             << "None (Type # to open folder / select file, or *# to select folder)"
+             << "None (Type 'select 1 2' or [M] to select folders/files, or # to open)"
              << color(CLR_RESET) << "\n";
         cout << "    Preview : " << color(CLR_HINT) << "-" << color(CLR_RESET) << "\n\n";
     }
@@ -1675,31 +1895,148 @@ void Explorer::renderDashboard() const
     }
 
     cout << "    ACTIONS\n";
-    cout << "    [1-9..] Select / open item    [B] Back        [N] New folder   [F] New file\n";
-    cout << "    [E] Edit file    [R] Rename   [D] Delete      [C] Copy   [X] Move   [V] Paste\n";
-    cout << "    [S] Sort         [/text] Search               [T] Tree   [I] Info   [K] Colors on/off\n";
-    cout << "    [H] Help         [Q] Quit     " << color(CLR_HINT) << "(or type 'terminal' / 'demo')" << color(CLR_RESET) << "\n\n";
+    cout << "    [1-9..] Open/Select   [M] Multi-Select   [U/J] Scroll   [B] Back\n";
+    cout << "    [N] New folder  [F] New file  [E] Edit   [R] Rename     [D] Delete/Trash\n";
+    cout << "    [C] Copy        [X] Move      [V] Paste  [W] Trash Bin  [S] Sort\n";
+    cout << "    [/text] Search  [T] Tree      [I] Info   [K] Colors     [H] Help  [Q] Quit\n\n";
+}
+
+void Explorer::handleSelectCommand(const string &args)
+{
+    string input = args;
+    if (input.length() == 0)
+    {
+        cout << "\n    ┌── SELECT ITEMS (FOLDERS & FILES) ───────────────────────────────────┐\n";
+        cout << "    │  Enter item numbers separated by spaces (e.g. 1 2 4)                │\n";
+        cout << "    │  Or type 'all' to select everything, or 'clear' to deselect all.    │\n";
+        cout << "    └─────────────────────────────────────────────────────────────────────┘\n";
+        cout << "    Select > ";
+        if (!getline(cin >> ws, input))
+            return;
+    }
+
+    int start = 0;
+    while (start < (int)input.length() && (input[start] == ' ' || input[start] == '\t'))
+        start++;
+    int end = (int)input.length() - 1;
+    while (end >= start && (input[end] == ' ' || input[end] == '\t'))
+        end--;
+    if (start > end)
+        return;
+    input = input.substr(start, end - start + 1);
+
+    if (input == "clear" || input == "none" || input == "0")
+    {
+        clearSelection();
+        setMessage("Cleared item selection.", MSG_INFO);
+        return;
+    }
+
+    int visCount = getVisibleCount();
+    if (visCount == 0)
+    {
+        setMessage("Folder is empty! Nothing to select.", MSG_ERROR);
+        return;
+    }
+
+    if (input == "all")
+    {
+        clearSelection();
+        for (int i = 1; i <= visCount; i++)
+        {
+            addSelection(getVisibleItem(i));
+        }
+        setMessage(string("Selected all ") + intToString(selectedCount) + " item(s).", MSG_SUCCESS);
+        return;
+    }
+
+    clearSelection();
+    int i = 0;
+    int len = input.length();
+    int firstValidIndex = -1;
+    int invalidCount = 0;
+
+    while (i < len)
+    {
+        while (i < len && (input[i] == ' ' || input[i] == ',' || input[i] == '\t'))
+            i++;
+        if (i >= len)
+            break;
+
+        int num = 0;
+        bool hasDigits = false;
+        bool badToken = false;
+        while (i < len && input[i] != ' ' && input[i] != ',' && input[i] != '\t')
+        {
+            if (input[i] >= '0' && input[i] <= '9')
+            {
+                num = num * 10 + (input[i] - '0');
+                hasDigits = true;
+            }
+            else
+            {
+                badToken = true;
+            }
+            i++;
+        }
+
+        if (!hasDigits || badToken)
+        {
+            invalidCount++;
+            continue;
+        }
+
+        Item *target = getVisibleItem(num);
+        if (target == nullptr)
+        {
+            invalidCount++;
+        }
+        else
+        {
+            addSelection(target);
+            if (firstValidIndex == -1)
+                firstValidIndex = num;
+        }
+    }
+
+    if (selectedCount == 0)
+    {
+        setMessage("No valid item numbers selected!", MSG_ERROR);
+    }
+    else
+    {
+        if (firstValidIndex != -1)
+            ensureVisible(firstValidIndex);
+
+        if (selectedCount == 1)
+        {
+            Item *sel = selectedItems[0];
+            setMessage(string("Selected ") + (sel->getIsFolder() ? "folder '" : "file '") + sel->getName() + "'.", MSG_SUCCESS);
+        }
+        else
+        {
+            setMessage(string("Selected ") + intToString(selectedCount) + " items (folders/files).", MSG_SUCCESS);
+        }
+    }
 }
 
 void Explorer::handleDashboardCopyOrMove(bool isMove)
 {
-    if (selectedItem == nullptr)
+    if (selectedCount == 0)
     {
-        setMessage("Select an item first by typing its number", MSG_INFO);
+        setMessage("Select item(s) first using 'select' (or [M]) or by typing a number!", MSG_INFO);
         return;
     }
 
-    if (isMove)
+    clipboardCount = 0;
+    for (int i = 0; i < selectedCount; i++)
     {
-        cutToClipboard(selectedItem->getName());
+        clipboardItems[clipboardCount++] = selectedItems[i];
     }
-    else
-    {
-        copyToClipboard(selectedItem->getName());
-    }
+    isCutOperation = isMove;
 
-    cout << "\n    ┌── " << (isMove ? "MOVE" : "COPY") << " DESTINATION ───────────────────────────────────────────┐\n";
-    cout << "    │  0. Keep in Clipboard (to Paste later with [V])                     │\n";
+    cout << "\n    ┌── " << (isMove ? "MOVE" : "COPY") << " " << selectedCount << " SELECTED ITEM(S) ──────────────────────────────────┐\n";
+    cout << "    │  0. Keep in Clipboard (navigate anywhere and press [V] to Paste)    │\n";
     cout << "    │  1. .. (parent folder)                                              │\n";
 
     int folderOption = 2;
@@ -1708,7 +2045,7 @@ void Explorer::handleDashboardCopyOrMove(bool isMove)
         Item *child = (*currentFolder)[i];
         if (strcmp(child->getName(), ".Trash") == 0)
             continue;
-        if (child->getIsFolder() && child != selectedItem)
+        if (child->getIsFolder() && !isItemSelected(child))
         {
             cout << "    │  " << folderOption << ". ";
             printPadded(child->getName(), 64);
@@ -1736,6 +2073,7 @@ void Explorer::handleDashboardCopyOrMove(bool isMove)
 
     if (choice == 0)
     {
+        setMessage(string(isMove ? "Cut " : "Copied ") + intToString(clipboardCount) + " item(s) to clipboard. Open a folder and press [V]!", MSG_SUCCESS);
         return;
     }
 
@@ -1752,7 +2090,7 @@ void Explorer::handleDashboardCopyOrMove(bool isMove)
             Item *child = (*currentFolder)[i];
             if (strcmp(child->getName(), ".Trash") == 0)
                 continue;
-            if (child->getIsFolder() && child != selectedItem)
+            if (child->getIsFolder() && !isItemSelected(child))
             {
                 if (curr == choice)
                 {
@@ -1770,13 +2108,268 @@ void Explorer::handleDashboardCopyOrMove(bool isMove)
         return;
     }
 
-    if (isMove)
+    Item *snap[MAX_SEL];
+    int snapCount = selectedCount;
+    for (int i = 0; i < snapCount; i++)
     {
-        moveItem(selectedItem->getName(), destName);
+        snap[i] = selectedItems[i];
+    }
+
+    int okCount = 0;
+    for (int i = 0; i < snapCount; i++)
+    {
+        string itemName = snap[i]->getName();
+        bool ok = isMove ? moveItem(itemName, destName) : copyItem(itemName, destName);
+        if (ok)
+            okCount++;
+    }
+
+    if (isMove && okCount > 0)
+    {
+        clipboardCount = 0;
+        isCutOperation = false;
+    }
+
+    if (snapCount > 1)
+    {
+        if (okCount > 0)
+        {
+            setMessage(string(isMove ? "Moved " : "Deep copied ") + intToString(okCount) + " of " + intToString(snapCount) + " item(s) into '" + destName + "'.", MSG_SUCCESS);
+        }
+        else
+        {
+            setMessage("Operation failed for selected items!", MSG_ERROR);
+        }
+    }
+}
+
+void Explorer::handleDashboardDelete()
+{
+    if (selectedCount == 0)
+    {
+        setMessage("Select item(s) first using 'select' (or [M]) or by typing a number!", MSG_INFO);
+        return;
+    }
+
+    cout << "\n    ┌── DELETE / TRASH CONFIRMATION ──────────────────────────────────────┐\n";
+    cout << "    │  [Y] Move to Trash    [P] Permanent Delete    [N] Cancel            │\n";
+    cout << "    └─────────────────────────────────────────────────────────────────────┘\n";
+    if (selectedCount == 1)
+    {
+        cout << "    Action for '" << selectedItems[0]->getName() << "' (Y/P/N) > ";
     }
     else
     {
-        copyItem(selectedItem->getName(), destName);
+        cout << "    Action for all " << selectedCount << " selected items (Y/P/N) > ";
+    }
+
+    string confirm;
+    if (!getline(cin >> ws, confirm))
+        return;
+    if (confirm.length() == 0)
+    {
+        setMessage("Delete cancelled.", MSG_INFO);
+        return;
+    }
+
+    char act = tolower((unsigned char)confirm[0]);
+    if (act != 'y' && act != 'p')
+    {
+        setMessage("Delete cancelled.", MSG_INFO);
+        return;
+    }
+
+    string names[MAX_SEL];
+    int countToProcess = selectedCount;
+    for (int i = 0; i < countToProcess; i++)
+    {
+        names[i] = selectedItems[i]->getName();
+    }
+
+    if (act == 'y')
+    {
+        int trashedCount = 0;
+        for (int i = 0; i < countToProcess; i++)
+        {
+            if (moveToTrash(names[i]))
+                trashedCount++;
+        }
+        if (countToProcess > 1)
+        {
+            setMessage(string("Moved ") + intToString(trashedCount) + " item(s) to Trash.", MSG_SUCCESS);
+        }
+    }
+    else
+    {
+        int deletedCount = 0;
+        int beforeNodes = Item::getTotalItems();
+        for (int i = 0; i < countToProcess; i++)
+        {
+            if (deleteItem(names[i]))
+                deletedCount++;
+        }
+        int afterNodes = Item::getTotalItems();
+
+        if (countToProcess > 1)
+        {
+            setMessage(string("Permanently deleted ") + intToString(deletedCount) + " item(s). Memory freed for " + intToString(beforeNodes - afterNodes) + " node(s).", MSG_SUCCESS);
+        }
+    }
+}
+
+void Explorer::handleDashboardTrash()
+{
+    while (true)
+    {
+        cout << "\033[2J\033[H";
+        printLine("  ╔", "═", "╗", 74);
+        string title = "  TRASH BIN (/.Trash)";
+        string rightInfo = string("Items in Trash: ") + intToString(trashFolder->getChildCount()) + " | Total Size: " + intToString(trashFolder->getTotalSize()) + " B  ";
+        cout << "  ║" << color(CLR_HEADER) << title;
+        int spaces = 74 - (int)title.length() - (int)rightInfo.length();
+        for (int i = 0; i < spaces; i++)
+            cout << " ";
+        cout << rightInfo << color(CLR_RESET) << "║\n";
+        printLine("  ╚", "═", "╝", 74);
+
+        cout << "    Restoring puts items back into: " << getCurrentPath() << "\n\n";
+
+        cout << "  ┌─────┬──────────────────────┬────────┬──────────┬──────────────────┬─────┐\n";
+        cout << "  │ #   │ Name                 │ Type   │ Size     │ Created          │ Ver │\n";
+        cout << "  ├─────┼──────────────────────┼────────┼──────────┼──────────────────┼─────┤\n";
+
+        int tCount = trashFolder->getChildCount();
+        if (tCount == 0)
+        {
+            cout << "  │ " << color(CLR_HINT);
+            printPadded("(Trash is empty)", 72);
+            cout << color(CLR_RESET) << " │\n";
+        }
+        else
+        {
+            for (int i = 0; i < tCount; i++)
+            {
+                Item *child = (*trashFolder)[i];
+                string rowColor = child->getIsFolder() ? color(CLR_FOLDER) : "";
+                string numStr = intToString(i + 1);
+                string tag = child->getIsFolder() ? "[D] " : "[F] ";
+                string nameStr = tag + child->getName();
+                string typeStr = child->getIsFolder() ? "Folder" : "File";
+                string sizeStr = intToString(child->getTotalSize()) + " B";
+                string verStr = string("v") + intToString(child->version);
+
+                cout << "  │" << rowColor << " ";
+                printPadded(numStr, 3);
+                cout << " │ ";
+                printPadded(nameStr, 20);
+                cout << " │ ";
+                printPadded(typeStr, 6);
+                cout << " │ ";
+                printPadded(sizeStr, 8);
+                cout << " │ ";
+                cout << child->createdDate;
+                cout << " │ ";
+                printPadded(verStr, 3);
+                cout << " " << color(CLR_RESET) << "│\n";
+            }
+        }
+        cout << "  └─────┴──────────────────────┴────────┴──────────┴──────────────────┴─────┘\n\n";
+
+        if (lastMessageType != MSG_NONE && lastMessage.length() > 0)
+        {
+            string msgClr = color(CLR_INFO);
+            string icon = "! ";
+            if (lastMessageType == MSG_SUCCESS)
+            {
+                msgClr = color(CLR_SUCCESS);
+                icon = "✔ ";
+            }
+            else if (lastMessageType == MSG_ERROR)
+            {
+                msgClr = color(CLR_ERROR);
+                icon = "✖ ";
+            }
+            cout << "    " << msgClr << icon << lastMessage << color(CLR_RESET) << "\n\n";
+        }
+
+        cout << "    TRASH ACTIONS\n";
+        cout << "    [1-9..] Restore item by # to current folder    [A] Restore ALL items\n";
+        cout << "    [E] Empty Trash (permanently free RAM)         [B / 0] Back to Dashboard\n\n";
+        cout << "    Trash Command > ";
+
+        string input;
+        if (!getline(cin >> ws, input))
+            break;
+        if (input.length() == 0)
+            continue;
+
+        if (input == "0" || tolower((unsigned char)input[0]) == 'b' || tolower((unsigned char)input[0]) == 'q')
+        {
+            break;
+        }
+        else if (isAllDigits(input))
+        {
+            int num = 0;
+            for (int i = 0; i < (int)input.length(); i++)
+            {
+                num = num * 10 + (input[i] - '0');
+            }
+            if (num < 1 || num > trashFolder->getChildCount())
+            {
+                setMessage("Trash item number out of range!", MSG_ERROR);
+            }
+            else
+            {
+                string targetName = (*trashFolder)[num - 1]->getName();
+                restoreFromTrash(targetName);
+            }
+        }
+        else if (tolower((unsigned char)input[0]) == 'a')
+        {
+            if (trashFolder->getChildCount() == 0)
+            {
+                setMessage("Trash is already empty.", MSG_INFO);
+            }
+            else
+            {
+                int restored = 0;
+                while (trashFolder->getChildCount() > 0)
+                {
+                    string targetName = (*trashFolder)[0]->getName();
+                    if (restoreFromTrash(targetName))
+                        restored++;
+                    else
+                        break;
+                }
+                setMessage(string("Restored all ") + intToString(restored) + " item(s) to " + getCurrentPath() + ".", MSG_SUCCESS);
+            }
+        }
+        else if (tolower((unsigned char)input[0]) == 'e')
+        {
+            if (trashFolder->getChildCount() == 0)
+            {
+                setMessage("Trash is already empty.", MSG_INFO);
+            }
+            else
+            {
+                cout << "    Permanently delete all items in Trash? (Y/N) > ";
+                string conf;
+                if (!getline(cin >> ws, conf))
+                    break;
+                if (conf.length() > 0 && tolower((unsigned char)conf[0]) == 'y')
+                {
+                    emptyTrash();
+                }
+                else
+                {
+                    setMessage("Empty Trash cancelled.", MSG_INFO);
+                }
+            }
+        }
+        else
+        {
+            setMessage("Unknown Trash command! Enter an item #, A, E, or B.", MSG_ERROR);
+        }
     }
 }
 
@@ -1817,25 +2410,31 @@ void Explorer::showDashboardHelp() const
 {
     cout << "\033[2J\033[H";
     cout << "\n========== DASHBOARD HELP & SHORTCUTS ==========\n";
-    cout << "  <number>     : Open folder immediately, or select a file for preview\n";
-    cout << "  *<number>    : Select a folder (without opening it) for R/D/C/X/I\n";
-    cout << "  B            : Go back to parent folder\n";
-    cout << "  N            : Create a new folder in current location\n";
-    cout << "  F            : Create a new file with text content\n";
-    cout << "  E            : Edit content of the currently selected file\n";
-    cout << "  R            : Rename the currently selected item\n";
-    cout << "  D            : Delete the currently selected item (with Y/N prompt)\n";
-    cout << "  C            : Copy selected item to a destination folder or clipboard\n";
-    cout << "  X            : Move/Cut selected item to a destination folder or clipboard\n";
-    cout << "  V            : Paste item from clipboard into current folder\n";
-    cout << "  S            : Sort current folder by Name, Size, Date, or Type\n";
-    cout << "  /text        : Search for 'text' across all folders and files\n";
-    cout << "  T            : View complete directory tree\n";
-    cout << "  I            : View full metadata for the selected item\n";
-    cout << "  K            : Toggle ANSI terminal colors on/off\n";
-    cout << "  terminal     : Switch to classic command-line shell\n";
-    cout << "  demo         : Run automated professor viva demonstration\n";
-    cout << "  Q            : Quit and free all dynamically allocated memory\n";
+    cout << "  <number>        : Open a folder immediately, or select a file for preview\n";
+    cout << "  select <1 2..>  : Select one or multiple folders/files (e.g. 'select 1 3')\n";
+    cout << "  select all      : Select all items in the current folder\n";
+    cout << "  select clear    : Clear current selection\n";
+    cout << "  M               : Open interactive multi-select prompt\n";
+    cout << "  U / J           : Scroll directory table Up / Down\n";
+    cout << "  B               : Go back to parent folder\n";
+    cout << "  N               : Create a new folder in current location\n";
+    cout << "  F               : Create a new file with text content\n";
+    cout << "  E               : Edit content of the selected file\n";
+    cout << "  R               : Rename the selected folder or file\n";
+    cout << "  D               : Move selected item(s) to Trash (Y) or Permanent Delete (P)\n";
+    cout << "  W (or 'trash')  : Open Trash Bin to view, restore by #, or empty Trash\n";
+    cout << "  C               : Copy all selected folder(s)/file(s) to folder or clipboard\n";
+    cout << "  X               : Move/Cut all selected folder(s)/file(s)\n";
+    cout << "  V               : Paste all items from clipboard into current folder\n";
+    cout << "  S               : Sort current folder by Name, Size, Date, or Type\n";
+    cout << "  /text           : Search for 'text' across all folders and files\n";
+    cout << "  T               : View complete directory tree\n";
+    cout << "  I               : View full metadata for the selected item\n";
+    cout << "  K               : Toggle ANSI terminal colors on/off\n";
+    cout << "  terminal        : Switch to classic command-line shell\n";
+    cout << "  menu            : Switch to classic numbered menu\n";
+    cout << "  demo            : Run automated professor viva demonstration\n";
+    cout << "  Q               : Quit and free all dynamically allocated memory\n";
     cout << "================================================\n";
     waitForEnter();
 }
@@ -1845,6 +2444,7 @@ void Explorer::startDashboard()
     string line;
     while (true)
     {
+        clampScroll();
         renderDashboard();
         cout << "    Command > ";
 
@@ -1873,26 +2473,32 @@ void Explorer::startDashboard()
         if (line == "menu")
         {
             startMenu();
+            setMessage("Returned from numbered menu to dashboard.", MSG_INFO);
+            continue;
+        }
+
+        string lowerLine = "";
+        for (int i = 0; i < (int)line.length(); i++)
+        {
+            lowerLine += (char)tolower((unsigned char)line[i]);
+        }
+
+        if (lowerLine == "trash")
+        {
+            handleDashboardTrash();
+            continue;
+        }
+
+        if (lowerLine == "select" || (lowerLine.length() > 7 && lowerLine.substr(0, 7) == "select "))
+        {
+            string rest = (line.length() > 6) ? line.substr(6) : "";
+            handleSelectCommand(rest);
             continue;
         }
 
         if (line.length() > 1 && line[0] == '*' && isAllDigits(line.substr(1)))
         {
-            int num = 0;
-            for (int i = 1; i < (int)line.length(); i++)
-            {
-                num = num * 10 + (line[i] - '0');
-            }
-            Item *target = getVisibleItem(num);
-            if (target == nullptr)
-            {
-                setMessage("Item number out of range!", MSG_ERROR);
-            }
-            else
-            {
-                selectedItem = target;
-                setMessage(string("Selected '") + target->getName() + "'.", MSG_INFO);
-            }
+            handleSelectCommand(line.substr(1));
             continue;
         }
 
@@ -1911,12 +2517,15 @@ void Explorer::startDashboard()
             else if (target->getIsFolder())
             {
                 currentFolder = target;
-                selectedItem = nullptr;
+                clearSelection();
+                scrollOffset = 0;
                 setMessage(string("Opened folder '") + target->getName() + "'.", MSG_INFO);
             }
             else
             {
-                selectedItem = target;
+                clearSelection();
+                addSelection(target);
+                ensureVisible(num);
                 setMessage(string("Selected file '") + target->getName() + "'.", MSG_INFO);
             }
             continue;
@@ -1943,6 +2552,38 @@ void Explorer::startDashboard()
         {
             cout << "\n  [Info] Exiting Virtual File Explorer. Freeing all memory...\n";
             break;
+        }
+        else if (cmd == 'm')
+        {
+            string rest = (line.length() > 1) ? line.substr(1) : "";
+            handleSelectCommand(rest);
+        }
+        else if (cmd == 'u' || cmd == '-')
+        {
+            if (scrollOffset > 0)
+            {
+                scrollOffset--;
+                setMessage("Scrolled up.", MSG_INFO);
+            }
+            else
+            {
+                setMessage("Already at top of folder list.", MSG_INFO);
+            }
+        }
+        else if (cmd == 'j' || cmd == '+')
+        {
+            int maxOff = getVisibleCount() - VIEW_ROWS;
+            if (maxOff < 0)
+                maxOff = 0;
+            if (scrollOffset < maxOff)
+            {
+                scrollOffset++;
+                setMessage("Scrolled down.", MSG_INFO);
+            }
+            else
+            {
+                setMessage("Already at bottom of folder list.", MSG_INFO);
+            }
         }
         else if (cmd == 'b')
         {
@@ -1971,59 +2612,53 @@ void Explorer::startDashboard()
         }
         else if (cmd == 'e')
         {
-            if (selectedItem == nullptr)
+            Item *sel = getPrimarySelected();
+            if (sel == nullptr)
             {
-                setMessage("Select an item first by typing its number", MSG_INFO);
+                setMessage("Select a file first by typing its number or 'select <num>'", MSG_INFO);
             }
-            else if (selectedItem->getIsFolder())
+            else if (selectedCount > 1)
             {
-                setMessage(string("'") + selectedItem->getName() + "' is a folder, not a file!", MSG_ERROR);
+                setMessage("Select only 1 file to edit at a time!", MSG_ERROR);
+            }
+            else if (sel->getIsFolder())
+            {
+                setMessage(string("'") + sel->getName() + "' is a folder, not a file!", MSG_ERROR);
             }
             else
             {
-                cout << "\n    ┌── EDIT FILE: " << selectedItem->getName() << "\n    ";
-                editFileContent(selectedItem->getName());
+                cout << "\n    ┌── EDIT FILE: " << sel->getName() << "\n    ";
+                editFileContent(sel->getName());
             }
         }
         else if (cmd == 'r')
         {
-            if (selectedItem == nullptr)
+            Item *sel = getPrimarySelected();
+            if (sel == nullptr)
             {
-                setMessage("Select an item first by typing its number", MSG_INFO);
+                setMessage("Select an item first using 'select <num>' or [M]", MSG_INFO);
+            }
+            else if (selectedCount > 1)
+            {
+                setMessage("Select only 1 item to rename at a time!", MSG_ERROR);
             }
             else
             {
                 cout << "\n    ┌── RENAME ITEM ──────────────────────────────────────────────────────┐\n";
-                cout << "    New name for '" << selectedItem->getName() << "' > ";
+                cout << "    New name for '" << sel->getName() << "' > ";
                 string newName;
                 if (!getline(cin >> ws, newName))
                     break;
-                renameItem(selectedItem->getName(), newName);
+                renameItem(sel->getName(), newName);
             }
         }
         else if (cmd == 'd')
         {
-            if (selectedItem == nullptr)
-            {
-                setMessage("Select an item first by typing its number", MSG_INFO);
-            }
-            else
-            {
-                string targetName = selectedItem->getName();
-                cout << "\n    ┌── CONFIRM DELETE ───────────────────────────────────────────────────┐\n";
-                cout << "    Delete '" << targetName << "'? (Y/N) > ";
-                string confirm;
-                if (!getline(cin >> ws, confirm))
-                    break;
-                if (confirm.length() > 0 && tolower((unsigned char)confirm[0]) == 'y')
-                {
-                    deleteItem(targetName);
-                }
-                else
-                {
-                    setMessage("Delete cancelled.", MSG_INFO);
-                }
-            }
+            handleDashboardDelete();
+        }
+        else if (cmd == 'w')
+        {
+            handleDashboardTrash();
         }
         else if (cmd == 'c')
         {
@@ -2049,14 +2684,18 @@ void Explorer::startDashboard()
         }
         else if (cmd == 'i')
         {
-            if (selectedItem == nullptr)
+            Item *sel = getPrimarySelected();
+            if (sel == nullptr)
             {
-                setMessage("Select an item first by typing its number", MSG_INFO);
+                setMessage("Select an item first using 'select <num>' or [M]", MSG_INFO);
             }
             else
             {
                 cout << "\033[2J\033[H";
-                showItemInfo(selectedItem->getName());
+                for (int k = 0; k < selectedCount; k++)
+                {
+                    showItemInfo(selectedItems[k]->getName());
+                }
                 waitForEnter();
             }
         }
@@ -2086,15 +2725,16 @@ void Explorer::startMenu()
     {
         cout << "\n=========================================================\n";
         cout << " VIRTUAL FILE EXPLORER | Path: " << getCurrentPath()
-             << " | Active Nodes in RAM: " << Item::getTotalItems() << "\n";
+             << " | Trash: " << trashFolder->getChildCount()
+             << " | Nodes in RAM: " << Item::getTotalItems() << "\n";
         cout << "=========================================================\n";
-        cout << " 1. Create Folder (mkdir)      7. Copy Item (Deep Copy)\n";
-        cout << " 2. Create File (touch)        8. Move Item (mv)\n";
-        cout << " 3. Open Folder (cd <path>)    9. Delete Item (rm)\n";
-        cout << " 4. Go Back (cd ..)           10. Sort Folder (Fn Pointer)\n";
-        cout << " 5. List Folder (ls)          11. RUN AUTOMATED DEMO\n";
-        cout << " 6. Show Full Tree & Search   12. Edit/Rename File\n";
-        cout << " 0. Exit Menu\n";
+        cout << " 1. Create Folder (mkdir)      8. Move Item (mv)\n";
+        cout << " 2. Create File (touch)        9. Delete / Move to Trash\n";
+        cout << " 3. Open Folder (cd <path>)   10. Sort Folder (Fn Pointer)\n";
+        cout << " 4. Go Back (cd ..)           11. RUN AUTOMATED DEMO\n";
+        cout << " 5. List Folder (ls)          12. Edit/Rename File\n";
+        cout << " 6. Show Full Tree & Search   13. Trash Bin (View/Restore/Empty)\n";
+        cout << " 7. Copy Item (Deep Copy)      0. Exit Menu\n";
         cout << "---------------------------------------------------------\n";
         cout << "Enter choice: ";
 
@@ -2166,11 +2806,34 @@ void Explorer::startMenu()
             printLastMessage();
             break;
         case 9:
-            cout << "Enter item name to delete: ";
+        {
+            int delMode = 0;
+            cout << "1. Move to Trash (.Trash) | 2. Permanently Delete: ";
+            if (!(cin >> delMode))
+            {
+                cin.clear();
+                cin.ignore(1000, '\n');
+                cout << "  [Error] Invalid option!\n";
+                break;
+            }
+            cout << "Enter item name: ";
             cin >> name1;
-            deleteItem(name1);
-            printLastMessage();
+            if (delMode == 1)
+            {
+                moveToTrash(name1);
+                printLastMessage();
+            }
+            else if (delMode == 2)
+            {
+                deleteItem(name1);
+                printLastMessage();
+            }
+            else
+            {
+                cout << "  [Error] Invalid option!\n";
+            }
             break;
+        }
         case 10:
         {
             int sChoice = 0;
@@ -2235,6 +2898,31 @@ void Explorer::startMenu()
             else
             {
                 cout << "  [Error] Invalid option!\n";
+            }
+            break;
+        }
+        case 13:
+        {
+            int tSub = 0;
+            listTrash();
+            cout << "\nTrash Options: 1. Restore Item | 2. Empty Trash | 0. Back: ";
+            if (!(cin >> tSub))
+            {
+                cin.clear();
+                cin.ignore(1000, '\n');
+                cout << "  [Error] Invalid option!\n";
+                break;
+            }
+            if (tSub == 1)
+            {
+                cout << "Enter item name to restore to " << getCurrentPath() << ": ";
+                cin >> name1;
+                restoreFromTrash(name1);
+                printLastMessage();
+            }
+            else if (tSub == 2)
+            {
+                emptyTrash();
             }
             break;
         }
@@ -2329,6 +3017,13 @@ void Explorer::startShell()
             if (!(cin >> arg1))
                 break;
             editFileContent(arg1);
+            printLastMessage();
+        }
+        else if (cmd == "select")
+        {
+            string rest;
+            getline(cin, rest);
+            handleSelectCommand(rest);
             printLastMessage();
         }
         else if (cmd == "copy")

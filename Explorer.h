@@ -11,23 +11,30 @@ bool compareByType(const Item *a, const Item *b);
 class Explorer
 {
 private:
-    Item *root;
-    Item *currentFolder;
-    Item *trashFolder;
-
-    Item *clipboardItem;
-    bool isCutOperation;
-    Item *selectedItem;
-
-    bool useColors;
-    string currentSortLabel;
-    string lastMessage;
-    int lastMessageType;
+    static const int MAX_SEL = 100;
+    static const int VIEW_ROWS = 5;
 
     static const int MSG_NONE = 0;
     static const int MSG_SUCCESS = 1;
     static const int MSG_ERROR = 2;
     static const int MSG_INFO = 3;
+
+    Item *root;
+    Item *currentFolder;
+    Item *trashFolder;
+
+    Item *clipboardItems[MAX_SEL];
+    int clipboardCount;
+    bool isCutOperation;
+
+    Item *selectedItems[MAX_SEL];
+    int selectedCount;
+
+    int scrollOffset;
+    bool useColors;
+    string currentSortLabel;
+    string lastMessage;
+    int lastMessageType;
 
     bool isValidName(const string &name) const;
     Item *resolvePath(const string &path) const;
@@ -35,7 +42,15 @@ private:
     string intToString(int num) const;
     bool isAllDigits(const string &text) const;
     string getUniqueName(const Item *folder, const string &baseName) const;
-    bool isClipboardAffected(const Item *target) const;
+
+    void clearSelection();
+    bool isItemSelected(const Item *item) const;
+    void addSelection(Item *item);
+    void removeSelection(const Item *item);
+    Item *getPrimarySelected() const;
+    void sanitizeClipboardAndSelection(const Item *deletedTarget);
+    void clampScroll();
+    void ensureVisible(int oneBasedIndex);
 
     void setMessage(const string &msg, int type);
     void printLastMessage() const;
@@ -49,7 +64,10 @@ private:
     void waitForEnter() const;
 
     void renderDashboard() const;
+    void handleSelectCommand(const string &args);
     void handleDashboardCopyOrMove(bool isMove);
+    void handleDashboardDelete();
+    void handleDashboardTrash();
     void handleDashboardSort();
     void showDashboardHelp() const;
 
