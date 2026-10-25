@@ -9,16 +9,20 @@ int Item::totalItems = 0;
 
 Item::Item(const char *n, int folder, const char *txt)
 {
-    if (n == NULL) n = "unnamed";
+    if (n == NULL)
+        n = "unnamed";
     strncpy(name, n, 49);
     name[49] = '\0';
 
-    isFolder = folder;
+    isFolder = folder ? 1 : 0;
 
-    if (isFolder == 1 || txt == NULL) {
+    if (isFolder == 1 || txt == NULL)
+    {
         strcpy(content, "");
         size = 0;
-    } else {
+    }
+    else
+    {
         strncpy(content, txt, 199);
         content[199] = '\0';
         size = strlen(content);
@@ -62,10 +66,13 @@ Item::~Item()
 
 Item &Item::setName(const char *newName)
 {
-    if (newName != NULL) {
-        if (parent != NULL) {
+    if (newName != NULL)
+    {
+        if (parent != NULL)
+        {
             Item *same = parent->findChild(newName);
-            if (same != NULL && same != this) {
+            if (same != NULL && same != this)
+            {
                 cout << "Error: Name already exists in folder.\n";
                 return *this;
             }
@@ -78,7 +85,8 @@ Item &Item::setName(const char *newName)
 
 Item &Item::setContent(const char *newText)
 {
-    if (isFolder == 0 && newText != NULL) {
+    if (isFolder == 0 && newText != NULL)
+    {
         strncpy(content, newText, 199);
         content[199] = '\0';
         size = strlen(content);
@@ -94,7 +102,8 @@ Item *Item::getParent() const { return parent; }
 
 int Item::getTotalSize() const
 {
-    if (isFolder == 0) return size;
+    if (isFolder == 0)
+        return size;
 
     int total = 0;
     for (int i = 0; i < children.getSize(); i++)
@@ -106,23 +115,34 @@ int Item::getTotalSize() const
 
 int Item::addChild(Item *child)
 {
-    if (child == NULL || isFolder == 0) return 0;
+    if (child == NULL)
+        return 0;
+    if (isFolder == 0)
+    {
+        cout << "Error: Cannot add an item inside a file!\n";
+        return 0;
+    }
 
-    if (child == this) {
+    if (child == this)
+    {
         cout << "Error: Cannot add folder inside itself!\n";
         return 0;
     }
-    if (child->parent != NULL) {
+    if (child->parent != NULL)
+    {
         cout << "Error: Item already belongs to another folder!\n";
         return 0;
     }
-    for (Item *p = parent; p != NULL; p = p->parent) {
-        if (p == child) {
+    for (Item *p = parent; p != NULL; p = p->parent)
+    {
+        if (p == child)
+        {
             cout << "Error: Cannot add folder inside its own sub-folder!\n";
             return 0;
         }
     }
-    if (findChild(child->name) != NULL) {
+    if (findChild(child->name) != NULL)
+    {
         cout << "Error: Name already exists in folder.\n";
         return 0;
     }
@@ -134,7 +154,8 @@ int Item::addChild(Item *child)
 
 Item *Item::findChild(const char *childName) const
 {
-    if (childName == NULL) return NULL;
+    if (childName == NULL)
+        return NULL;
     for (int i = 0; i < children.getSize(); i++)
     {
         if (strcmp(children[i]->getName(), childName) == 0)
@@ -147,7 +168,8 @@ Item *Item::findChild(const char *childName) const
 
 Item *Item::removeChild(const char *childName)
 {
-    if (childName == NULL) return NULL;
+    if (childName == NULL)
+        return NULL;
     for (int i = 0; i < children.getSize(); i++)
     {
         if (strcmp(children[i]->getName(), childName) == 0)
@@ -176,24 +198,35 @@ const Item &Item::operator=(const Item &other)
 {
     if (this != &other)
     {
-        for (int i = children.getSize() - 1; i >= 0; i--) {
-            delete children[i];
-            children.removeAt(i);
-        }
 
-        strcpy(name, other.name);
-        isFolder = other.isFolder;
-        strcpy(content, other.content);
-        size = other.size;
-        version = other.version;
-        createdDate = other.createdDate;
-
+        DynamicArray<Item *> fresh;
         for (int i = 0; i < other.children.getSize(); i++)
         {
             Item *copyChild = new Item(*(other.children[i]));
             copyChild->parent = this;
-            children.pushBack(copyChild);
+            fresh.pushBack(copyChild);
         }
+        char newName[50];
+        char newContent[200];
+        strcpy(newName, other.name);
+        strcpy(newContent, other.content);
+        int newIsFolder = other.isFolder;
+        int newSize = other.size;
+        int newVersion = other.version;
+        DateTime newDate = other.createdDate;
+
+        for (int i = 0; i < children.getSize(); i++)
+        {
+            delete children[i];
+        }
+        children = fresh;
+
+        strcpy(name, newName);
+        strcpy(content, newContent);
+        isFolder = newIsFolder;
+        size = newSize;
+        version = newVersion;
+        createdDate = newDate;
     }
     return *this;
 }
@@ -205,7 +238,8 @@ bool Item::operator==(const Item &other) const
 
 Item *Item::operator[](int index) const
 {
-    if (index >= 0 && index < children.getSize()) {
+    if (index >= 0 && index < children.getSize())
+    {
         return children[index];
     }
     return NULL;
@@ -250,8 +284,10 @@ int Item::getTotalItems()
 
 ostream &operator<<(ostream &out, const Item &it)
 {
-    if (it.isFolder == 1) out << "[FOLDER] ";
-    else out << "[FILE]   ";
+    if (it.isFolder == 1)
+        out << "[FOLDER] ";
+    else
+        out << "[FILE]   ";
 
     out << it.name << " | Size: " << it.getTotalSize() << " B | v" << it.version << " | Date: ";
     out << it.createdDate;
@@ -260,11 +296,13 @@ ostream &operator<<(ostream &out, const Item &it)
 
 istream &operator>>(istream &in, Item &it)
 {
-    if (it.isFolder == 1) return in;
+    if (it.isFolder == 1)
+        return in;
     cout << "Enter content: ";
     in >> ws;
     in.getline(it.content, 200);
-    if (in.fail()) {
+    if (in.fail())
+    {
         in.clear();
         in.ignore(1000, '\n');
     }

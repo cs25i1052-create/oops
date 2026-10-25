@@ -272,11 +272,14 @@ ostream &operator<<(ostream &out, const DateTime &dt)
 
 istream &operator>>(istream &in, DateTime &dt)
 {
-    int m, d, y, hr, min;
+    int m = 1, d = 1, y = 2026, hr = 12, min = 0; // defaults: never read uninitialised values
 
     cout << "Enter Month Day Year Hour Minute (e.g., 10 23 2026 14 30): ";
     in >> m >> d >> y >> hr >> min;
-    dt.setDateTime(m, d, y, hr, min);
+    if (in) // only apply when all five numbers were read successfully
+    {
+        dt.setDateTime(m, d, y, hr, min);
+    }
 
     return in;
 }
